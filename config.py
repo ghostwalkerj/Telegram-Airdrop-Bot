@@ -23,8 +23,8 @@ wallet_changes = 3  # How often a user is allowed to change their wallet address
 # MySQL Database
 mysql_host = "localhost"
 mysql_db = "TelegramAirdropBot"
-mysql_user = os.environ.get("AirdropUser")
-mysql_pw = os.environ.get("Animate-Scandal-Spotting5")
+mysql_user = os.environ.get("MYSQL_USER")
+mysql_pw = os.environ.get("MYSQL_PW")
 
 texts = {
     "start_1": "Hi {} and welcome to our Airdrop!\n\nGet started by clicking the button below.\n\n",
