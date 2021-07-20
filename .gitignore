@@ -128,3 +128,7 @@ test.py
 run_formatting.sh
 run_tests.sh
 requirements-dev.txt
+.DS_Store
+.idea/*
+bin/*
+pyvenv.cfg

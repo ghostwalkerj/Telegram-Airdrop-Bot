@@ -20,7 +20,7 @@ import config
 
 WEBHOOK_HOST = config.host
 WEBHOOK_PORT = 8443  # 443, 80, 88 or 8443 (port needs to be 'open')
-WEBHOOK_LISTEN = "0.0.0.0"  # In some VPS you may need to put here the IP addr.
+WEBHOOK_LISTEN = "45.32.113.204"  # In some VPS you may need to put here the IP addr.
 
 WEBHOOK_SSL_CERT = "./webhook_cert.pem"  # Path to the ssl certificate
 WEBHOOK_SSL_PRIV = "./webhook_pkey.pem"  # Path to the ssl private key
@@ -164,8 +164,8 @@ def handle_text(message):
 
 @bot.message_handler(
     func=lambda message: message.chat.type == "private"
-    and message.from_user.id not in airdrop_users
-    and message.text == "🚀 Join Airdrop"
+                         and message.from_user.id not in airdrop_users
+                         and message.text == "🚀 Join Airdrop"
 )
 def handle_text(message):
     bot.send_chat_action(message.chat.id, "typing")
@@ -197,8 +197,8 @@ def handle_text(message):
 
 @bot.message_handler(
     func=lambda message: message.chat.type == "private"
-    and message.from_user.id in airdrop_users
-    and message.text == "💼 View Wallet Address"
+                         and message.from_user.id in airdrop_users
+                         and message.text == "💼 View Wallet Address"
 )
 def handle_text(message):
     connection = get_connection()
@@ -415,6 +415,20 @@ bot.set_webhook(
 # Build ssl context
 context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
 context.load_cert_chain(WEBHOOK_SSL_CERT, WEBHOOK_SSL_PRIV)
+
+
+# Process webhook calls
+async def handle(request):
+    if request.match_info.get('token') == bot.token:
+        request_body_dict = await request.json()
+        update = telebot.types.Update.de_json(request_body_dict)
+        bot.process_new_updates([update])
+        return web.Response()
+    else:
+        return web.Response(status=403)
+
+
+app.router.add_post('/{token}/', handle)
 
 # Start aiohttp server
 web.run_app(
