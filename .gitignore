@@ -132,3 +132,4 @@ requirements-dev.txt
 .idea/*
 bin/*
 pyvenv.cfg
+/.vscode/settings.json
