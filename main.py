@@ -1,12 +1,6 @@
-# --------------------------------------------- #
-# Plugin Name           : TelegramAirdropBot    #
-# Author Name           : fabston               #
-# File Name             : main.py               #
-# --------------------------------------------- #
-
+import os
 import ssl
 from io import BytesIO
-from random import randint
 from time import gmtime, strftime
 
 import eth_utils
@@ -20,7 +14,7 @@ import config
 
 WEBHOOK_HOST = config.host
 WEBHOOK_PORT = 8443  # 443, 80, 88 or 8443 (port needs to be 'open')
-WEBHOOK_LISTEN = "45.32.113.204"  # In some VPS you may need to put here the IP addr.
+WEBHOOK_LISTEN = os.environ.get("HOST")
 
 WEBHOOK_SSL_CERT = "./webhook_cert.pem"  # Path to the ssl certificate
 WEBHOOK_SSL_PRIV = "./webhook_pkey.pem"  # Path to the ssl private key
@@ -93,7 +87,8 @@ airdropkeyboard.row(types.KeyboardButton("💼 View Wallet Address"))
 
 def cancel_button():
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("Cancel Operation", callback_data="cancel_input"))
+    markup.add(InlineKeyboardButton(
+        "Cancel Operation", callback_data="cancel_input"))
     return markup
 
 
@@ -116,7 +111,7 @@ def update_wallet_address_button(message):
 @bot.message_handler(
     func=lambda message: message.chat.type == "private", commands=["start"]
 )
-def handle_text(message):
+def handle_start(message):
     connection = get_connection()
     with connection.cursor() as cursor:
         bot.send_chat_action(message.chat.id, "typing")
@@ -129,8 +124,7 @@ def handle_text(message):
         if message.chat.id in airdrop_users:
             bot.send_message(
                 message.chat.id,
-                config.texts["start_2"].format(message.from_user.first_name)
-                + "[» Source Code](https://github.com/fabston/Telegram-Airdrop-Bot).",
+                config.texts["start_2"].format(message.from_user.first_name),
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
                 reply_markup=airdropkeyboard,
@@ -138,16 +132,14 @@ def handle_text(message):
         elif not config.airdrop_live:
             bot.send_message(
                 message.chat.id,
-                config.texts["airdrop_start"]
-                + "[» Source Code](https://github.com/fabston/Telegram-Airdrop-Bot).",
+                config.texts["airdrop_start"],
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
         elif len(airdrop_users) >= config.airdrop_cap:
             bot.send_message(
                 message.chat.id,
-                config.texts["airdrop_max_cap"]
-                + "[» Source Code](https://github.com/fabston/Telegram-Airdrop-Bot).",
+                config.texts["airdrop_max_cap"],
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
@@ -155,19 +147,27 @@ def handle_text(message):
             bot.send_message(
                 message.chat.id,
                 config.texts["start_1"].format(message.from_user.first_name)
-                + "[» Source Code](https://github.com/fabston/Telegram-Airdrop-Bot).",
+                + " [» Rules](https://estateprotocol.com/).",
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
                 reply_markup=defaultkeyboard,
             )
 
 
+def gen_yesno():
+    markup = InlineKeyboardMarkup()
+    markup.row_width = 2
+    markup.add(InlineKeyboardButton("Yes", callback_data="cb_yes"),
+               InlineKeyboardButton("No", callback_data="cb_no"))
+    return markup
+
+
 @bot.message_handler(
     func=lambda message: message.chat.type == "private"
-                         and message.from_user.id not in airdrop_users
-                         and message.text == "🚀 Join Airdrop"
+    and message.from_user.id not in airdrop_users
+    and message.text == "🚀 Join Airdrop"
 )
-def handle_text(message):
+def handle_join(message):
     bot.send_chat_action(message.chat.id, "typing")
     if not config.airdrop_live:
         bot.send_message(
@@ -185,22 +185,17 @@ def handle_text(message):
                 reply_markup=telebot.types.ReplyKeyboardRemove(),
             )
         else:
-            bot.send_message(
-                message.chat.id,
-                config.texts["airdrop_address"],
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-                reply_markup=telebot.types.ReplyKeyboardRemove(),
-            )
-            bot.register_next_step_handler(message, address_check)
+            bot.send_message(message.chat.id,
+                             config.texts["agree"],
+                             reply_markup=gen_yesno())
 
 
 @bot.message_handler(
     func=lambda message: message.chat.type == "private"
-                         and message.from_user.id in airdrop_users
-                         and message.text == "💼 View Wallet Address"
+    and message.from_user.id in airdrop_users
+    and message.text == "💼 View Wallet Address"
 )
-def handle_text(message):
+def handle_view_wallet(message):
     connection = get_connection()
     with connection.cursor() as cursor:
         sql = "SELECT address FROM users WHERE user_id = %s"
@@ -281,7 +276,8 @@ def address_check_update(message, old_address):
             msg = bot.reply_to(
                 message, config.texts["airdrop_walletused"], parse_mode="Markdown"
             )
-            bot.register_next_step_handler(msg, address_check_update, old_address)
+            bot.register_next_step_handler(
+                msg, address_check_update, old_address)
         elif eth_utils.is_address(message.text):
             sql = "UPDATE users SET address = %s, address_change_status = address_change_status + 1 WHERE user_id = %s"
             cursor.execute(sql, (message.text, message.chat.id))
@@ -316,7 +312,17 @@ def address_check_update(message, old_address):
                 parse_mode="Markdown",
                 reply_markup=cancel_button(),
             )
-            bot.register_next_step_handler(msg, address_check_update, old_address)
+            bot.register_next_step_handler(
+                msg, address_check_update, old_address)
+
+
+def collect_email(call):
+    bot.send_chat_action(call.message.chat.id, "typing")
+    msg = bot.send_message(
+        call.message.chat.id,
+        config.texts["twitter_handle"],
+        parse_mode="Markdown",
+    )
 
 
 @bot.message_handler(
@@ -346,7 +352,25 @@ def handle_text(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-    if call.data == "cancel_input":
+    bot.send_chat_action(call.message.chat.id, "typing")
+
+    if call.data == "cb_yes":
+        msg = bot.send_message(
+            call.message.chat.id,
+            config.texts["email"],
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=defaultkeyboard,
+        )
+        bot.register_next_step_handler(msg, collect_email)
+
+    elif call.data == "cb_no":
+        bot.send_message(
+            call.message.chat.id,
+            "😒 Whatever",
+            reply_markup=telebot.types.ReplyKeyboardRemove()
+        )
+    elif call.data == "cancel_input":
         bot.delete_message(
             chat_id=call.message.chat.id, message_id=call.message.message_id
         )
@@ -368,7 +392,6 @@ def callback_query(call):
                 reply_markup=defaultkeyboard,
             )
         bot.clear_step_handler_by_chat_id(chat_id=call.message.chat.id)
-
     elif call.data == "edit_wallet_address":
         connection = get_connection()
         with connection.cursor() as cursor:

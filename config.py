@@ -6,9 +6,6 @@ load_dotenv()  # take environment variables from .env.
 # Enable / disable the airdrop
 airdrop_live = True
 
-# Enable / disable captcha
-captcha = True
-
 # Telegram
 api_token = os.environ.get("API_TOKEN")
 
@@ -27,13 +24,21 @@ mysql_user = os.environ.get("MYSQL_USER")
 mysql_pw = os.environ.get("MYSQL_PW")
 
 texts = {
-    "start_1": "Hi {} and welcome to our Airdrop!\n\nGet started by clicking the button below.\n\n",
+    "start_1": "Hi {} and welcome!\n\nEstate Protocol is airdropping $30,000 worth of tokens to our participants.\n\n Please follow all the rules to be eligible.",
     "start_2": "Hi {},\n\nYour address has been added to the airdrop list!\n\n",
-    "start_captcha": "Hi {},\n\n",
+    "agree": "Do you agree to take full legal responsibility according to your local laws for participating in this airdrop?",
+    "email": "What is your email address?",
+    "twitter_handle": "What is your Twitter handle?",
+    "follow_twitter": "Please follow Estate Protocol on Twitter.",
+    "retweet": "Retweet the pinned post.",
+    "telegram": "Please join our Telegram community: ",
+    "whitepaper": "Please read our whitepaper, it’s an easy to read document detailing our current and future plans. It can be found on ",
     "airdrop_start": "The airdrop didn't start yet.",
-    "airdrop_address": "Type in your address:",
+    "airdrop_address": "What’s your BSC address? Please make sure not to give an exchange address: ",
     "airdrop_max_cap": "ℹ️ The airdrop reached its max cap.",
     "airdrop_walletused": "⚠️ That address has already been used. Use a different one.",
-    "airdrop_confirmation": "✅ Your address has been added to airdrop list.",
+    "airdrop_confirmation": "✅ Your address has been added to airdrop list.\n\n Keep an eye out on our Twitter account and Telegram community for the announcements of the results!",
     "airdrop_wallet_update": "✅ Your address has been updated.",
+    "quiz": "",
+    "survey": ""
 }
