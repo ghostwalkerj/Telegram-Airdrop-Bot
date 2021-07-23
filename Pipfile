@@ -36,6 +36,10 @@ yarl = "==1.6.3"
 PyMySQL = "==1.0.2"
 pyTelegramBotAPI = "==3.7.9"
 python-dotenv = "*"
+sqlalchemy = "*"
+flask-sqlalchemy = "*"
+mysqlclient = "*"
+pony = "*"
 
 [dev-packages]
 

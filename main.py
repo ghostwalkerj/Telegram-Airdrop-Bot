@@ -1,5 +1,6 @@
 import os
 import ssl
+import logging
 from io import BytesIO
 from time import gmtime, strftime
 
@@ -9,12 +10,16 @@ import telebot
 from aiohttp import web
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
-
 import config
+from entity import User, db
+from pony.orm import *
+import util
 
+logging.basicConfig(level=logging.DEBUG)
+# Constants
 WEBHOOK_HOST = config.host
 WEBHOOK_PORT = 8443  # 443, 80, 88 or 8443 (port needs to be 'open')
-WEBHOOK_LISTEN = os.environ.get("HOST")
+WEBHOOK_LISTEN = config.host
 
 WEBHOOK_SSL_CERT = "./webhook_cert.pem"  # Path to the ssl certificate
 WEBHOOK_SSL_PRIV = "./webhook_pkey.pem"  # Path to the ssl private key
@@ -22,63 +27,35 @@ WEBHOOK_SSL_PRIV = "./webhook_pkey.pem"  # Path to the ssl private key
 WEBHOOK_URL_BASE = "https://{}:{}".format(WEBHOOK_HOST, WEBHOOK_PORT)
 WEBHOOK_URL_PATH = "/{}/".format(config.api_token)
 
-bot = telebot.TeleBot(config.api_token)
 
+bot = telebot.TeleBot(config.api_token)
 app = web.Application()
 
-
-def get_connection():
-    connection = pymysql.connect(
-        host=config.mysql_host,
-        user=config.mysql_user,
-        password=config.mysql_pw,
-        db=config.mysql_db,
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True,
-    )
-    return connection
+db.bind(provider='mysql', host=config.mysql_host,
+        user=config.mysql_user, passwd=config.mysql_pw, db=config.mysql_db)
+logging.debug("SQL Connected")
+db.generate_mapping(create_tables=True)
+logging.debug("Tables created")
 
 
-def create_tables():
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        table_name = "users"
-        try:
-            cursor.execute(
-                "	CREATE TABLE `"
-                + table_name
-                + "` ( `user_id` int(12) DEFAULT NULL,  `address` varchar(42) DEFAULT NULL,  `address_change_status` tinyint DEFAULT 0,  `captcha` tinyint DEFAULT NULL )"
-            )
-            print("Database tables created.")
-            return create_tables
-        except:
-            pass
-
-
-def get_airdrop_wallets():
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        sql = "SELECT address FROM users WHERE address IS NOT NULL"
-        cursor.execute(sql)
-        tmp = []
-        for user in cursor.fetchall():
-            tmp.append(user["address"])
-        return tmp
-
-
+@db_session
 def get_airdrop_users():
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        sql = "SELECT user_id FROM users WHERE address IS NOT NULL"
-        cursor.execute(sql)
-        tmp = []
-        for user in cursor.fetchall():
-            tmp.append(user["user_id"])
-        return tmp
+    return User.select(lambda a: a.airdrop_user == True)
 
 
-defaultkeyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+@db_session
+def get_user(message):
+    bot.send_chat_action(message.chat.id, "typing")
+    user = User.get(telegram_handle=message.chat.id)
+    if(user == None or user.airdrop_user == True):
+        handle_start(message)
+    else:
+        logging.debug("Found user %s" % user.telegram_handle)
+        return user
+
+
+defaultkeyboard = types.ReplyKeyboardMarkup(
+    resize_keyboard=True, one_time_keyboard=True)
 defaultkeyboard.row(types.KeyboardButton("🚀 Join Airdrop"))
 
 airdropkeyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -92,66 +69,65 @@ def cancel_button():
     return markup
 
 
-def update_wallet_address_button(message):
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        sql = "SELECT address_change_status FROM users WHERE user_id = %s"
-        cursor.execute(sql, message.chat.id)
-        address_changes = cursor.fetchone()["address_change_status"]
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton(
-                f"Update Address ({address_changes}/{config.wallet_changes})",
-                callback_data="edit_wallet_address",
-            )
-        )
-        return markup
-
-
 @bot.message_handler(
     func=lambda message: message.chat.type == "private", commands=["start"]
 )
+@db_session
 def handle_start(message):
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        bot.send_chat_action(message.chat.id, "typing")
-        sql = "SELECT EXISTS(SELECT user_id FROM users WHERE user_id = %s)"
-        cursor.execute(sql, message.chat.id)
-        result = cursor.fetchone()
-        if not list(result.values())[0]:
-            sql = "INSERT INTO users(user_id) VALUES (%s)"
-            cursor.execute(sql, message.chat.id)
-        if message.chat.id in airdrop_users:
-            bot.send_message(
-                message.chat.id,
-                config.texts["start_2"].format(message.from_user.first_name),
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-                reply_markup=airdropkeyboard,
-            )
-        elif not config.airdrop_live:
-            bot.send_message(
-                message.chat.id,
-                config.texts["airdrop_start"],
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-        elif len(airdrop_users) >= config.airdrop_cap:
-            bot.send_message(
-                message.chat.id,
-                config.texts["airdrop_max_cap"],
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-        else:
-            bot.send_message(
-                message.chat.id,
-                config.texts["start_1"].format(message.from_user.first_name)
-                + " [» Rules](https://estateprotocol.com/).",
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-                reply_markup=defaultkeyboard,
-            )
+    bot.send_chat_action(message.chat.id, "typing")
+    logging.debug("/start")
+    user = None
+    try:
+        user = User.get(telegram_handle=message.chat.id)
+    except Exception as e:
+        logging.error(e)
+    if user is None:
+        user = User(telegram_handle=message.chat.id)
+        logging.debug("User created")
+    if user.airdrop_user is True:
+        bot.send_message(
+            message.chat.id,
+            config.texts["start_2"].format(message.from_user.first_name),
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=airdropkeyboard,
+        )
+    elif not config.airdrop_live:
+        bot.send_message(
+            message.chat.id,
+            config.texts["airdrop_start"],
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+    elif get_airdrop_users().count() >= config.airdrop_cap:
+        bot.send_message(
+            message.chat.id,
+            config.texts["airdrop_max_cap"],
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+    else:
+        bot.send_message(
+            message.chat.id,
+            config.texts["start_1"].format(message.from_user.first_name)
+            + " [» Rules](https://estateprotocol.com/).",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=defaultkeyboard,
+        )
+
+
+@bot.message_handler(
+    func=lambda message: message.chat.type == "private"
+    and message.text == "🚀 Join Airdrop"
+)
+@db_session
+def handle_join_airdrop(message):
+    user = User(get_user(message))
+    logging.debug("Joining Airdrop")
+    bot.send_message(message.chat.id,
+                     config.texts["agree"],
+                     reply_markup=gen_yesno())
 
 
 def gen_yesno():
@@ -164,100 +140,56 @@ def gen_yesno():
 
 @bot.message_handler(
     func=lambda message: message.chat.type == "private"
-    and message.from_user.id not in airdrop_users
-    and message.text == "🚀 Join Airdrop"
-)
-def handle_join(message):
-    bot.send_chat_action(message.chat.id, "typing")
-    if not config.airdrop_live:
-        bot.send_message(
-            message.chat.id,
-            config.texts["airdrop_start"],
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-    else:
-        if len(airdrop_users) >= config.airdrop_cap:
-            bot.send_message(
-                message.chat.id,
-                config.texts["airdrop_max_cap"],
-                parse_mode="Markdown",
-                reply_markup=telebot.types.ReplyKeyboardRemove(),
-            )
-        else:
-            bot.send_message(message.chat.id,
-                             config.texts["agree"],
-                             reply_markup=gen_yesno())
-
-
-@bot.message_handler(
-    func=lambda message: message.chat.type == "private"
-    and message.from_user.id in airdrop_users
     and message.text == "💼 View Wallet Address"
 )
+@db_session
 def handle_view_wallet(message):
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        sql = "SELECT address FROM users WHERE user_id = %s"
-        cursor.execute(sql, message.chat.id)
-        data = cursor.fetchall()
+    user = User(get_user(message))
+    if user.airdrop_user == True:
         bot.send_message(
             message.chat.id,
             text="Your tokens will be sent to:\n\n[{0}](https://etherscan.io/address/{0})".format(
-                data[0]["address"]
-            ),
+                user.address),
             parse_mode="Markdown",
             disable_web_page_preview=True,
-            reply_markup=update_wallet_address_button(message),
+            reply_markup=edit_wallet_address(message),
         )
 
 
+@db_session
 def address_check(message):
-    bot.send_chat_action(message.chat.id, "typing")
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        if len(airdrop_users) >= config.airdrop_cap:
+    user = User(get_user(message))
+    if get_airdrop_users().count() >= config.airdrop_cap:
+        bot.send_message(
+            message.chat.id, config.texts["airdrop_max_cap"], parse_mode="Markdown"
+        )
+        bot.clear_step_handler(message)
+    elif User.get(address=message.text):
+        msg = bot.reply_to(
+            message,
+            config.texts["airdrop_walletused"],
+            parse_mode="Markdown",
+            reply_markup=cancel_button(),
+        )
+        bot.register_next_step_handler(msg, address_check)
+    elif eth_utils.is_address(message.text):
+        user.address = message.text
+        try:
             bot.send_message(
-                message.chat.id, config.texts["airdrop_max_cap"], parse_mode="Markdown"
-            )
-            bot.clear_step_handler(message)
-        elif message.text in airdrop_wallets:
-            msg = bot.reply_to(
-                message,
-                config.texts["airdrop_walletused"],
+                config.log_channel,
+                "🎈 *#Airdrop_Entry ({0}):*\n"
+                " • User: [{1}](tg://user?id={2}) (#id{2})\n"
+                " • Address: [{3}](https://etherscan.io/address/{3})\n"
+                " • Time: `{4} UTC`".format(
+                    get_airdrop_users().count()),
+                bot.get_chat(message.chat.id).first_name,
+                message.chat.id,
+                message.text,
+                strftime("%Y-%m-%d %H:%M:%S", gmtime()),
                 parse_mode="Markdown",
-                reply_markup=cancel_button(),
-            )
-            bot.register_next_step_handler(msg, address_check)
-        elif eth_utils.is_address(message.text):
-            sql = "UPDATE users SET address = %s WHERE user_id = %s"
-            cursor.execute(sql, (message.text, message.chat.id))
-            bot.reply_to(
-                message,
-                config.texts["airdrop_confirmation"],
-                parse_mode="Markdown",
-                reply_markup=airdropkeyboard,
-            )
-            airdrop_wallets.append(message.text)
-            airdrop_users.append(message.chat.id)
-            try:
-                bot.send_message(
-                    config.log_channel,
-                    "🎈 *#Airdrop_Entry ({0}):*\n"
-                    " • User: [{1}](tg://user?id={2}) (#id{2})\n"
-                    " • Address: [{3}](https://etherscan.io/address/{3})\n"
-                    " • Time: `{4} UTC`".format(
-                        len(airdrop_users),
-                        bot.get_chat(message.chat.id).first_name,
-                        message.chat.id,
-                        message.text,
-                        strftime("%Y-%m-%d %H:%M:%S", gmtime()),
-                    ),
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
-            except:
-                pass
+                disable_web_page_preview=True)
+        except:
+            pass
         else:
             msg = bot.reply_to(
                 message,
@@ -268,43 +200,37 @@ def address_check(message):
             bot.register_next_step_handler(msg, address_check)
 
 
+@db_session
 def address_check_update(message, old_address):
-    bot.send_chat_action(message.chat.id, "typing")
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        if message.text in airdrop_wallets:
-            msg = bot.reply_to(
-                message, config.texts["airdrop_walletused"], parse_mode="Markdown"
+    user = User(get_user(message))
+    if User.get(address=message.text):
+        msg = bot.reply_to(
+            message, config.texts["airdrop_walletused"], parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(
+            msg, address_check_update, old_address)
+    elif eth_utils.is_address(message.text):
+        user.address = message.text
+        try:
+            bot.send_message(
+                config.log_channel,
+                "📝 *#Address_Updated:*\n"
+                " • User: [{1}](tg://user?id={2}) (#id{2})\n"
+                " • Old Address: [{3}](https://etherscan.io/address/{3})\n"
+                " • New Address: [{4}](https://etherscan.io/address/{4})\n"
+                " • Time: `{5} UTC`".format(
+                    get_airdrop_users().count(),
+                    bot.get_chat(message.chat.id).first_name,
+                    message.chat.id,
+                    old_address,
+                    message.text,
+                    strftime("%Y-%m-%d %H:%M:%S", gmtime()),
+                ),
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
             )
-            bot.register_next_step_handler(
-                msg, address_check_update, old_address)
-        elif eth_utils.is_address(message.text):
-            sql = "UPDATE users SET address = %s, address_change_status = address_change_status + 1 WHERE user_id = %s"
-            cursor.execute(sql, (message.text, message.chat.id))
-            bot.reply_to(
-                message, config.texts["airdrop_wallet_update"], parse_mode="Markdown"
-            )
-            airdrop_wallets.append(message.text)
-            try:
-                bot.send_message(
-                    config.log_channel,
-                    "📝 *#Address_Updated:*\n"
-                    " • User: [{1}](tg://user?id={2}) (#id{2})\n"
-                    " • Old Address: [{3}](https://etherscan.io/address/{3})\n"
-                    " • New Address: [{4}](https://etherscan.io/address/{4})\n"
-                    " • Time: `{5} UTC`".format(
-                        len(airdrop_wallets),
-                        bot.get_chat(message.chat.id).first_name,
-                        message.chat.id,
-                        old_address,
-                        message.text,
-                        strftime("%Y-%m-%d %H:%M:%S", gmtime()),
-                    ),
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
-            except:
-                pass
+        except:
+            pass
         else:
             msg = bot.reply_to(
                 message,
@@ -316,29 +242,84 @@ def address_check_update(message, old_address):
                 msg, address_check_update, old_address)
 
 
-def collect_email(call):
-    bot.send_chat_action(call.message.chat.id, "typing")
-    msg = bot.send_message(
-        call.message.chat.id,
-        config.texts["twitter_handle"],
-        parse_mode="Markdown",
-    )
+@ db_session
+def verify_email(message):
+    try:
+        user = User(get_user(message))
+        email = message.text
+        logging.debug("Email received %s" % email)
+        # Verify email here
+        email_verified = util.check_email(email)
+        if email_verified:
+            user.email = email
+            msg = bot.send_message(
+                message.chat.id,
+                config.texts["twitter_handle"],
+                parse_mode="Markdown",
+            )
+            bot.register_next_step_handler(msg, verify_twitter)
+        else:
+            msg = bot.send_message(
+                message.chat.id,
+                config.texts["bad_email"],
+                parse_mode="Markdown",
+            )
+            bot.register_next_step_handler(msg, verify_email)
+    except Exception as e:
+        logging.error(e)
+
+
+@ db_session
+def verify_twitter(message):
+    try:
+        user = User(get_user(message))
+        twitter = message.text
+        logging.debug("Twitter received %s" % twitter)
+        user.twitter = twitter
+        msg = bot.send_message(
+            message.chat.id,
+            config.texts["follow_twitter"],
+            parse_mode="Markdown",
+        )
+        msg = bot.send_message(
+            message.chat.id,
+            config.texts["telegram"],
+            parse_mode="Markdown",
+        )
+        msg = bot.send_message(
+            message.chat.id,
+            config.texts["whitepaper"],
+            parse_mode="Markdown",
+        )
+        bot.register_next_step_handler(msg, quiz)
+
+    except Exception as e:
+        logging.error(e)
+
+
+def quiz(message):
+    try:
+        msg = bot.send_message(
+            message.chat.id,
+            config.texts["whitepaper"],
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logging.error(e)
 
 
 @bot.message_handler(
     func=lambda message: message.chat.id in config.admins, commands=["airdroplist"]
 )
+@db_session
 def handle_text(message):
     bot.send_chat_action(message.chat.id, "upload_document")
-    connection = get_connection()
-    with connection.cursor() as cursor:
-        sql = "SELECT address FROM users"
-        cursor.execute(sql)
-        airdrop = "AIRDROP ({}):\n\n".format(len(airdrop_users))
-        for user in cursor.fetchall():
-            if user["address"] is not None:
-                address = user["address"]
-                airdrop += "{}\n".format(address)
+    users = get_airdrop_users()
+    airdrop = "AIRDROP ({}):\n\n".format(users.count())
+    for user in users:
+        if user.address is not None:
+            address = user.address
+            airdrop += "{}\n".format(address)
 
         with BytesIO(str.encode(airdrop)) as output:
             output.name = "AIRDROP.txt"
@@ -350,36 +331,33 @@ def handle_text(message):
             return
 
 
-@bot.callback_query_handler(func=lambda call: True)
+@ bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
-    bot.send_chat_action(call.message.chat.id, "typing")
-
     if call.data == "cb_yes":
         msg = bot.send_message(
             call.message.chat.id,
             config.texts["email"],
             parse_mode="Markdown",
             disable_web_page_preview=True,
-            reply_markup=defaultkeyboard,
         )
-        bot.register_next_step_handler(msg, collect_email)
-
+        bot.register_next_step_handler(msg, verify_email)
     elif call.data == "cb_no":
-        bot.send_message(
+        msg = bot.send_message(
             call.message.chat.id,
-            "😒 Whatever",
-            reply_markup=telebot.types.ReplyKeyboardRemove()
+            "😒 Whatever"
         )
+        bot.register_next_step_handler(msg, "start")
+
     elif call.data == "cancel_input":
         bot.delete_message(
             chat_id=call.message.chat.id, message_id=call.message.message_id
         )
-        if len(airdrop_users) >= config.airdrop_cap:
+        if get_airdrop_users().count() >= config.airdrop_cap:
             bot.send_message(
                 call.message.chat.id,
                 "✅ Operation canceled.\n\nℹ️ The airdrop reached its max cap.",
             )
-        elif call.message.chat.id in airdrop_users:
+        elif User.get(address=call.message.text):
             bot.send_message(
                 call.message.chat.id,
                 "✅ Operation canceled.",
@@ -393,39 +371,27 @@ def callback_query(call):
             )
         bot.clear_step_handler_by_chat_id(chat_id=call.message.chat.id)
     elif call.data == "edit_wallet_address":
-        connection = get_connection()
-        with connection.cursor() as cursor:
-            sql = "SELECT address, address_change_status FROM users WHERE user_id = %s"
-            cursor.execute(sql, call.message.chat.id)
-            data = cursor.fetchone()
-            if data["address_change_status"] != config.wallet_changes:
-                address = data["address"]
-                bot.edit_message_text(
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    text="Please send your new address:",
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
-                bot.register_next_step_handler(
-                    call.message, address_check_update, address
-                )
-            else:
-                bot.answer_callback_query(
-                    call.id,
-                    "⚠️ You can't change your address anymore.",
-                    show_alert=True,
-                )
+        user = User(get_user(call.message))
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="Please send your new address:",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+        bot.register_next_step_handler(
+            call.message, address_check_update, user.address
+        )
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "⚠️ You can't change your address anymore.",
+            show_alert=True,
+        )
 
-
-create_db_tables = create_tables()
-airdrop_users = get_airdrop_users()
-airdrop_wallets = get_airdrop_wallets()
 
 bot.enable_save_next_step_handlers(delay=2)
 bot.load_next_step_handlers()
-
-create_db_tables
 
 # Remove webhook, it fails sometimes the set if there is a previous webhook
 bot.remove_webhook()
@@ -439,8 +405,9 @@ bot.set_webhook(
 context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
 context.load_cert_chain(WEBHOOK_SSL_CERT, WEBHOOK_SSL_PRIV)
 
-
 # Process webhook calls
+
+
 async def handle(request):
     if request.match_info.get('token') == bot.token:
         request_body_dict = await request.json()
@@ -449,14 +416,12 @@ async def handle(request):
         return web.Response()
     else:
         return web.Response(status=403)
-
-
 app.router.add_post('/{token}/', handle)
 
 # Start aiohttp server
 web.run_app(
     app,
-    host=WEBHOOK_LISTEN,
+    host='0.0.0.0',
     port=WEBHOOK_PORT,
     ssl_context=context,
 )
