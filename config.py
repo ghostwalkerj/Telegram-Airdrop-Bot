@@ -32,7 +32,7 @@ texts = {
     "twitter_handle": "What is your Twitter handle?",
     "follow_twitter": "Please follow Estate Protocol on Twitter and retweet the pinned post.",
     "telegram": "Also join our Telegram community: ",
-    "whitepaper": "Lastly read our whitepaper, it’s an easy to read document detailing our current and future plans. It can be found on xx. There will be a",
+    "whitepaper": "Lastly read our whitepaper, it’s an easy to read document detailing our current and future plans. It can be found on xx. Type 'ok' to take the whitepaper quiz.",
     "airdrop_start": "The airdrop didn't start yet.",
     "airdrop_address": "What’s your BSC address? Please make sure not to give an exchange address: ",
     "airdrop_max_cap": "ℹ️ The airdrop reached its max cap.",

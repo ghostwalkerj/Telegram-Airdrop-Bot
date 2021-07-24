@@ -11,5 +11,6 @@ class User(db.Entity):
     twitter = Optional(str)
     twitter_follow = Required(bool, default=False, sql_default='0')
     twitter_retweet = Required(bool, default=False, sql_default='0')
+    quiz_answer = Optional(str)
     quized_passed = Required(bool, default=False, sql_default='0')
     airdrop_user = Required(bool, default=False, sql_default='0')

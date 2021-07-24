@@ -9,9 +9,11 @@ from aiohttp import web
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 import config
-from entity import User, db
+from user import User, db
 from pony.orm import *
 import util
+from quiz import Quiz
+import quiz_config
 
 # Constants
 WEBHOOK_HOST = config.host
@@ -45,7 +47,7 @@ def get_airdrop_users():
 
 
 @db_session
-def get_user(message):
+def get_user(message) -> User:
     bot.send_chat_action(message.chat.id, "typing")
     user = User.get(telegram_id=message.chat.id)
     if(user == None or user.airdrop_user == True):
@@ -84,11 +86,22 @@ def gen_yesno():
     return markup
 
 
+def gen_abcd():
+    markup = InlineKeyboardMarkup()
+    markup.row_width = 4
+    markup.add(InlineKeyboardButton("a", callback_data="abcd_a"),
+               InlineKeyboardButton("b", callback_data="abcd_b"),
+               InlineKeyboardButton("c", callback_data="abcd_c"),
+               InlineKeyboardButton("d", callback_data="abcd_d"))
+    return markup
+
 # Message Handers
-@bot.message_handler(
+
+
+@ bot.message_handler(
     func=lambda message: message.chat.type == "private", commands=["start"]
 )
-@db_session
+@ db_session
 def handle_start(message):
     bot.send_chat_action(message.chat.id, "typing")
     logging.debug("/start")
@@ -134,26 +147,30 @@ def handle_start(message):
         )
 
 
-@bot.message_handler(
+@ bot.message_handler(
     func=lambda message: message.chat.type == "private"
     and message.text == "🚀 Join Airdrop"
 )
-@db_session
+@ db_session
 def handle_join_airdrop(message):
-    user = User(get_user(message))
+    logging.debug("In join airdrop")
+    try:
+        user = get_user(message)
+    except Exception as e:
+        logging.error(e)
     logging.debug("Joining Airdrop")
     bot.send_message(message.chat.id,
                      config.texts["agree"],
                      reply_markup=gen_yesno())
 
 
-@bot.message_handler(
+@ bot.message_handler(
     func=lambda message: message.chat.type == "private"
     and message.text == "💼 View Wallet Address"
 )
-@db_session
+@ db_session
 def handle_view_wallet(message):
-    user = User(get_user(message))
+    user = get_user(message)
     if user.airdrop_user == True:
         bot.send_message(
             message.chat.id,
@@ -165,9 +182,9 @@ def handle_view_wallet(message):
         )
 
 
-@db_session
+@ db_session
 def address_check(message):
-    user = User(get_user(message))
+    user = get_user(message)
     if reached_maxed_cap():
         bot.send_message(
             message.chat.id, config.texts["airdrop_max_cap"], parse_mode="Markdown"
@@ -209,9 +226,9 @@ def address_check(message):
             bot.register_next_step_handler(msg, address_check)
 
 
-@db_session
+@ db_session
 def address_check_update(message, old_address):
-    user = User(get_user(message))
+    user = get_user(message)
     if User.get(address=message.text):
         msg = bot.reply_to(
             message, config.texts["airdrop_walletused"], parse_mode="Markdown"
@@ -254,7 +271,7 @@ def address_check_update(message, old_address):
 @ db_session
 def verify_email(message):
     try:
-        user = User(get_user(message))
+        user = get_user(message)
         email = message.text
         logging.debug("Email received %s" % email)
         # Verify email here
@@ -281,7 +298,7 @@ def verify_email(message):
 @ db_session
 def verify_twitter(message):
     try:
-        user = User(get_user(message))
+        user = get_user(message)
         twitter = message.text
         logging.debug("Twitter received %s" % twitter)
         user.twitter = twitter
@@ -300,27 +317,29 @@ def verify_twitter(message):
             config.texts["whitepaper"],
             parse_mode="Markdown",
         )
-        bot.register_next_step_handler(msg, quiz)
+        bot.register_next_step_handler(msg, ask_quiz)
 
     except Exception as e:
         logging.error(e)
 
 
-def quiz(message):
-    try:
-        msg = bot.send_message(
-            message.chat.id,
-            config.texts["whitepaper"],
-            parse_mode="Markdown",
-        )
-    except Exception as e:
-        logging.error(e)
+@db_session
+def ask_quiz(message):
+    user = get_user(message)
+    qqs = Quiz.quiz_list_from_config(quiz_config.questions)
+    qq = qqs[0]
+    user.quiz_answer = qq.correct_answer()
+    msg = bot.send_message(
+        message.chat.id,
+        Quiz.to_pretty_string(qq),
+        parse_mode="Markdown",
+        reply_markup=gen_abcd())
 
 
-@bot.message_handler(
+@ bot.message_handler(
     func=lambda message: message.from_user.username in config.admins, commands=["airdroplist"]
 )
-@db_session
+@ db_session
 def handle_airdroplist(message):
     bot.send_chat_action(message.chat.id, "upload_document")
     users = get_airdrop_users()
@@ -344,6 +363,7 @@ def handle_airdroplist(message):
 @ bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     if call.data == "cb_yes":
+        bot.send_chat_action(call.message.chat.id, "typing")
         msg = bot.send_message(
             call.message.chat.id,
             config.texts["email"],
@@ -352,12 +372,27 @@ def callback_query(call):
         )
         bot.register_next_step_handler(msg, verify_email)
     elif call.data == "cb_no":
+        bot.send_chat_action(call.message.chat.id, "typing")
         msg = bot.send_message(
             call.message.chat.id,
             "😒 Whatever"
         )
         bot.register_next_step_handler(msg, "start")
-
+    elif call.data == "abcd_a" or call.data == "abcd_b" or call.data == "abcd_c" or call.data == "abcd_d":
+        with db_session:
+            user = get_user(call.message)
+            correct = user.quiz_answer
+            user.quiz_answer = ""
+        if call.data[5] == correct:
+            msg = bot.send_message(
+                call.message.chat.id,
+                "Correct!"
+            )
+        else:
+            msg = bot.send_message(
+                call.message.chat.id,
+                "Wrong!"
+            )
     elif call.data == "cancel_input":
         bot.delete_message(
             chat_id=call.message.chat.id, message_id=call.message.message_id
@@ -381,7 +416,7 @@ def callback_query(call):
             )
         bot.clear_step_handler_by_chat_id(chat_id=call.message.chat.id)
     elif call.data == "edit_wallet_address":
-        user = User(get_user(call.message))
+        user = get_user(call.message)
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
