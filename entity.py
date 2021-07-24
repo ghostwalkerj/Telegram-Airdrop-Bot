@@ -4,7 +4,8 @@ db = Database()
 
 
 class User(db.Entity):
-    telegram_handle = Required(int, unique=True)
+    telegram_handle = Required(str, unique=True)
+    telegram_id = Required(int, unique=True)
     address = Optional(str, unique=True)
     email = Optional(str)
     twitter = Optional(str)

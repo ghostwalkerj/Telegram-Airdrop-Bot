@@ -1,11 +1,9 @@
-import os
 import ssl
 import logging
 from io import BytesIO
 from time import gmtime, strftime
 
 import eth_utils
-import pymysql
 import telebot
 from aiohttp import web
 from telebot import types
@@ -15,7 +13,6 @@ from entity import User, db
 from pony.orm import *
 import util
 
-logging.basicConfig(level=logging.DEBUG)
 # Constants
 WEBHOOK_HOST = config.host
 WEBHOOK_PORT = 8443  # 443, 80, 88 or 8443 (port needs to be 'open')
@@ -30,7 +27,10 @@ WEBHOOK_URL_PATH = "/{}/".format(config.api_token)
 
 bot = telebot.TeleBot(config.api_token)
 app = web.Application()
+logging.basicConfig(level=logging.DEBUG)
 
+
+# Setup DB Connection
 db.bind(provider='mysql', host=config.mysql_host,
         user=config.mysql_user, passwd=config.mysql_pw, db=config.mysql_db)
 logging.debug("SQL Connected")
@@ -38,6 +38,7 @@ db.generate_mapping(create_tables=True)
 logging.debug("Tables created")
 
 
+# Helper methods
 @db_session
 def get_airdrop_users():
     return User.select(lambda a: a.airdrop_user == True)
@@ -46,7 +47,7 @@ def get_airdrop_users():
 @db_session
 def get_user(message):
     bot.send_chat_action(message.chat.id, "typing")
-    user = User.get(telegram_handle=message.chat.id)
+    user = User.get(telegram_id=message.chat.id)
     if(user == None or user.airdrop_user == True):
         handle_start(message)
     else:
@@ -54,6 +55,12 @@ def get_user(message):
         return user
 
 
+@db_session
+def reached_maxed_cap():
+    return get_airdrop_users().count() >= config.airdrop_cap
+
+
+# Bot UI methods
 defaultkeyboard = types.ReplyKeyboardMarkup(
     resize_keyboard=True, one_time_keyboard=True)
 defaultkeyboard.row(types.KeyboardButton("🚀 Join Airdrop"))
@@ -69,6 +76,15 @@ def cancel_button():
     return markup
 
 
+def gen_yesno():
+    markup = InlineKeyboardMarkup()
+    markup.row_width = 2
+    markup.add(InlineKeyboardButton("Yes", callback_data="cb_yes"),
+               InlineKeyboardButton("No", callback_data="cb_no"))
+    return markup
+
+
+# Message Handers
 @bot.message_handler(
     func=lambda message: message.chat.type == "private", commands=["start"]
 )
@@ -78,12 +94,13 @@ def handle_start(message):
     logging.debug("/start")
     user = None
     try:
-        user = User.get(telegram_handle=message.chat.id)
+        user = User.get(telegram_id=message.chat.id)
     except Exception as e:
         logging.error(e)
     if user is None:
-        user = User(telegram_handle=message.chat.id)
-        logging.debug("User created")
+        user = User(telegram_id=message.chat.id,
+                    telegram_handle=message.from_user.username)
+        logging.debug("User created %s" % user.telegram_handle)
     if user.airdrop_user is True:
         bot.send_message(
             message.chat.id,
@@ -99,7 +116,7 @@ def handle_start(message):
             parse_mode="Markdown",
             disable_web_page_preview=True,
         )
-    elif get_airdrop_users().count() >= config.airdrop_cap:
+    elif reached_maxed_cap():
         bot.send_message(
             message.chat.id,
             config.texts["airdrop_max_cap"],
@@ -130,14 +147,6 @@ def handle_join_airdrop(message):
                      reply_markup=gen_yesno())
 
 
-def gen_yesno():
-    markup = InlineKeyboardMarkup()
-    markup.row_width = 2
-    markup.add(InlineKeyboardButton("Yes", callback_data="cb_yes"),
-               InlineKeyboardButton("No", callback_data="cb_no"))
-    return markup
-
-
 @bot.message_handler(
     func=lambda message: message.chat.type == "private"
     and message.text == "💼 View Wallet Address"
@@ -152,14 +161,14 @@ def handle_view_wallet(message):
                 user.address),
             parse_mode="Markdown",
             disable_web_page_preview=True,
-            reply_markup=edit_wallet_address(message),
+            reply_markup="edit_wallet_address",
         )
 
 
 @db_session
 def address_check(message):
     user = User(get_user(message))
-    if get_airdrop_users().count() >= config.airdrop_cap:
+    if reached_maxed_cap():
         bot.send_message(
             message.chat.id, config.texts["airdrop_max_cap"], parse_mode="Markdown"
         )
@@ -309,10 +318,10 @@ def quiz(message):
 
 
 @bot.message_handler(
-    func=lambda message: message.chat.id in config.admins, commands=["airdroplist"]
+    func=lambda message: message.from_user.username in config.admins, commands=["airdroplist"]
 )
 @db_session
-def handle_text(message):
+def handle_airdroplist(message):
     bot.send_chat_action(message.chat.id, "upload_document")
     users = get_airdrop_users()
     airdrop = "AIRDROP ({}):\n\n".format(users.count())
@@ -331,6 +340,7 @@ def handle_text(message):
             return
 
 
+# Callback for Keyboards
 @ bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     if call.data == "cb_yes":
@@ -352,7 +362,7 @@ def callback_query(call):
         bot.delete_message(
             chat_id=call.message.chat.id, message_id=call.message.message_id
         )
-        if get_airdrop_users().count() >= config.airdrop_cap:
+        if reached_maxed_cap():
             bot.send_message(
                 call.message.chat.id,
                 "✅ Operation canceled.\n\nℹ️ The airdrop reached its max cap.",
@@ -390,6 +400,7 @@ def callback_query(call):
         )
 
 
+# Init step handlers
 bot.enable_save_next_step_handlers(delay=2)
 bot.load_next_step_handlers()
 
